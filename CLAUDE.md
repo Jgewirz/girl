@@ -4,14 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GirlBot is a Telegram-based agentic chatbot for fitness and lifestyle assistance. It uses LangGraph for agent orchestration, python-telegram-bot for Telegram integration, and connects to various booking/affiliate APIs (Mindbody, Google Places, affiliate networks).
+GirlBot is a Telegram-based AI stylist and wellness assistant. It provides personalized style advice through photo analysis, color season discovery, wardrobe management, and outfit recommendations. It also helps with fitness class discovery and wellness.
+
+### Core Features
+- **AI Stylist**: Outfit analysis, color season analysis, makeup recommendations
+- **Photo Analysis**: GPT-4V powered vision for outfit and wardrobe cataloging
+- **Personalization**: Learns user's color season, style preferences, and wardrobe
+- **Fitness Discovery**: Google Places integration for finding classes
 
 ## Tech Stack
 
 - **Python 3.12+** with async throughout
 - **python-telegram-bot v22** - Telegram bot framework with message handlers
 - **LangGraph** - Agent orchestration as graph-based state machines
-- **LangChain (OpenAI/Anthropic)** - LLM providers (GPT-4o-mini primary, GPT-4o for complex tasks)
+- **LangChain (OpenAI/Anthropic)** - LLM providers (GPT-4o for vision, GPT-4o-mini for chat)
+- **GPT-4V** - Vision analysis for outfit/color/wardrobe photos
 - **Supabase** - PostgreSQL + pgvector + Auth (planned)
 - **Redis** - Session state, rate limiting (30 req/min), API response caching
 - **LangSmith** - Agent tracing and debugging
@@ -47,20 +54,22 @@ src/
 │   ├── settings.py      # Pydantic settings from .env
 │   └── logging.py       # Structlog configuration
 ├── agent/
-│   ├── state.py         # AgentState + UserContext dataclasses
+│   ├── state.py         # AgentState + UserContext + StyleProfile + WardrobeItem
 │   ├── graph.py         # LangGraph agent with tool support
 │   └── tools/
 │       ├── registry.py  # Tool registry pattern
 │       ├── places.py    # Google Places discovery tool
-│       └── preferences.py # User preference learning tools
+│       ├── preferences.py # User preference learning tools
+│       └── stylist.py   # AI Stylist tools (outfit, colors, wardrobe, makeup)
 ├── bot/
 │   ├── app.py           # Telegram Application factory
-│   └── handlers.py      # Command and message handlers
+│   └── handlers.py      # Command, message, and photo handlers
 ├── cache/
 │   ├── redis.py         # Connection pool and RedisClient wrapper
-│   └── session.py       # ConversationSession + SessionManager
+│   └── session.py       # ConversationSession + SessionManager (includes style_profile, wardrobe)
 └── services/
-    └── places.py        # Google Places API client
+    ├── places.py        # Google Places API client
+    └── vision.py        # GPT-4V vision service for photo analysis
 ```
 
 ## Architecture
@@ -96,6 +105,7 @@ Telegram Update → Rate Limiter (Redis) → LangGraph Agent Controller
 
 ## Agent Tools
 
+### Fitness & Discovery
 | Tool | Description | API |
 |------|-------------|-----|
 | `search_fitness_studios` | Search for gyms, yoga studios, fitness centers | Google Places |
@@ -104,6 +114,15 @@ Telegram Update → Rate Limiter (Redis) → LangGraph Agent Controller
 | `update_fitness_goals` | Save fitness goals (lose weight, build strength, etc.) | Redis Session |
 | `update_workout_preferences` | Save preferred activities (yoga, pilates, etc.) | Redis Session |
 
+### AI Stylist
+| Tool | Description | API |
+|------|-------------|-----|
+| `analyze_outfit` | Analyze outfit photo with personalized feedback based on user's color season | GPT-4V |
+| `analyze_colors` | Analyze selfie to determine color season (12-season system) | GPT-4V |
+| `add_to_wardrobe` | Catalog a clothing item photo to user's digital wardrobe | GPT-4V |
+| `get_makeup_recommendations` | Personalized makeup colors based on color season | Internal |
+| `suggest_outfit` | Generate outfit ideas for occasion using user's palette and wardrobe | Internal |
+
 ### Adding New Tools
 
 1. Create service client in `src/services/` with caching support
@@ -111,6 +130,33 @@ Telegram Update → Rate Limiter (Redis) → LangGraph Agent Controller
 3. Add `register_*_tools()` function and export from `src/agent/tools/__init__.py`
 4. Import and call registration in `register_all_tools()` in `src/agent/tools/__init__.py`
 5. Add tests in `tests/test_tools_*.py`
+
+## Style Profile Data Model
+
+User style profiles are stored in Redis sessions and include:
+
+```python
+StyleProfile:
+    skin_undertone: warm | cool | neutral
+    color_season: 12 seasons (e.g., "true_autumn", "cool_winter")
+    best_colors: list of color names
+    avoid_colors: list of colors that don't suit
+    hair_color, eye_color: for color analysis
+    body_type, height_category, preferred_fit
+    style_archetypes: ["classic", "romantic", "dramatic", etc.]
+    makeup_style: minimal | natural | glam | bold
+
+WardrobeItem:
+    item_id, category, subcategory
+    colors, patterns, occasions, seasons
+    image_data (thumbnail), notes, wear_count
+```
+
+### 12 Color Seasons
+- **Spring** (warm + bright): light_spring, true_spring, clear_spring
+- **Summer** (cool + muted): light_summer, true_summer, soft_summer
+- **Autumn** (warm + deep): soft_autumn, true_autumn, deep_autumn
+- **Winter** (cool + bright): cool_winter, true_winter, deep_winter
 
 ## External APIs
 

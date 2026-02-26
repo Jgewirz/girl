@@ -36,6 +36,10 @@ class ConversationSession:
     fitness_goals: list[str] = field(default_factory=list)
     preferred_workout_types: list[str] = field(default_factory=list)
 
+    # Style profile (AI Stylist)
+    style_profile: dict[str, Any] = field(default_factory=dict)
+    wardrobe: list[dict[str, Any]] = field(default_factory=list)
+
     # Conversation summary (for context compression)
     conversation_summary: str | None = None
 

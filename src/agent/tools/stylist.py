@@ -5,6 +5,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from src.agent.fallbacks import (
+    FallbackType,
+    get_fallback,
+    vision_fallback,
+)
 from src.config.logging import get_logger
 from src.services.vision import get_vision_service
 
@@ -112,7 +117,7 @@ async def analyze_outfit_photo(
 
     vision = await get_vision_service()
     if not vision:
-        return "I can't analyze photos right now. Please make sure the service is configured."
+        return get_fallback(FallbackType.API_KEY_MISSING, context={"service": "vision"})
 
     style_profile = None
     if user_context and user_context.get("style_profile"):
@@ -164,7 +169,7 @@ async def analyze_outfit_photo(
 
     except Exception as e:
         logger.error("analyze_outfit_failed", error=str(e))
-        return "I had trouble analyzing that photo. Could you try sending it again with good lighting?"
+        return vision_fallback(error=e)
 
 
 async def analyze_my_colors(
@@ -176,7 +181,7 @@ async def analyze_my_colors(
 
     vision = await get_vision_service()
     if not vision:
-        return {"error": "Vision service not configured"}
+        return {"error": get_fallback(FallbackType.API_KEY_MISSING, context={"service": "vision"})}
 
     try:
         analysis = await vision.analyze_colors(
@@ -237,7 +242,7 @@ async def analyze_my_colors(
 
     except Exception as e:
         logger.error("color_analysis_failed", error=str(e))
-        return {"error": "Analysis failed. Try a photo in natural light with minimal makeup."}
+        return {"error": vision_fallback(error=e)}
 
 
 async def add_wardrobe_item(
@@ -249,7 +254,7 @@ async def add_wardrobe_item(
 
     vision = await get_vision_service()
     if not vision:
-        return {"error": "Vision service not configured"}
+        return {"error": get_fallback(FallbackType.API_KEY_MISSING, context={"service": "vision"})}
 
     try:
         analysis = await vision.catalog_item(image_data)
@@ -282,7 +287,7 @@ Seasons: {', '.join(analysis.seasons)}
 
     except Exception as e:
         logger.error("wardrobe_add_failed", error=str(e))
-        return {"error": "Couldn't catalog that item. Try a clearer photo."}
+        return {"error": vision_fallback(error=e)}
 
 
 async def get_makeup_recommendations(

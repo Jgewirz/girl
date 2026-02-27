@@ -18,6 +18,19 @@ from src.agent.tools.places import (
     _format_details_for_agent,
 )
 from src.agent.tools import tool_registry
+from src.services.resilience import reset_circuit_breaker, _circuit_breakers, _rate_limiters
+
+
+@pytest.fixture(autouse=True)
+def reset_resilience_state():
+    """Reset circuit breakers and rate limiters between tests."""
+    # Clear all circuit breakers and rate limiters before each test
+    _circuit_breakers.clear()
+    _rate_limiters.clear()
+    yield
+    # Clean up after test
+    _circuit_breakers.clear()
+    _rate_limiters.clear()
 
 
 class TestPlaceResult:
@@ -307,7 +320,7 @@ class TestPlacesTools:
         with patch("src.agent.tools.places.get_places_client", return_value=None):
             result = await search_fitness_studios("yoga studios")
 
-        assert "not currently available" in result
+        assert "isn't available" in result or "not available" in result.lower()
 
     @pytest.mark.asyncio
     async def test_search_fitness_studios_success(self):

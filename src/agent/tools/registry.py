@@ -1,5 +1,7 @@
 """Tool registry pattern for dynamic tool management."""
 
+import asyncio
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -67,11 +69,15 @@ class ToolRegistry:
         """Convert registered tools to LangChain tool format."""
         tools: list[BaseTool] = []
         for config in self._tools.values():
+            # Check if function is async
+            is_async = asyncio.iscoroutinefunction(config.func)
+
             tool = StructuredTool.from_function(
                 func=config.func,
                 name=config.name,
                 description=config.description,
                 args_schema=config.args_schema,
+                coroutine=config.func if is_async else None,
             )
             tools.append(tool)
         return tools

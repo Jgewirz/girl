@@ -6,7 +6,28 @@
       "Bash(python -m ruff check:*)",
       "Bash(python -c:*)",
       "Bash(git init:*)",
-      "Bash(git remote add:*)"
+      "Bash(git remote add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(git add:*)",
+      "WebSearch",
+      "Bash(if [ -f .env ])",
+      "Bash(then echo \".env exists\")",
+      "Bash(else echo \".env not found - checking .env.example\")",
+      "Bash(fi)",
+      "Bash(docker ps:*)",
+      "Bash(docker run:*)",
+      "Bash(tasklist:*)",
+      "Bash(findstr:*)",
+      "Bash(taskkill:*)",
+      "Bash(timeout 10 python:*)",
+      "Bash(timeout 60 python:*)",
+      "Bash(timeout 45 python:*)",
+      "Bash(timeout /t 2 /nobreak)",
+      "Bash(python main.py:*)",
+      "Bash(powershell -Command \"Get-Process python* -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, StartTime, CommandLine | Format-Table -AutoSize\")",
+      "Bash(powershell -Command \"Get-Process python* -ErrorAction SilentlyContinue | Stop-Process -Force; Write-Host ''All Python processes killed''\")"
     ]
   }
 }

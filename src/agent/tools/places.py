@@ -3,6 +3,7 @@
 
 from pydantic import BaseModel, Field
 
+from src.agent.fallbacks import FallbackType, get_fallback, places_fallback
 from src.config.logging import get_logger
 from src.services.places import ACTIVITY_TO_PLACE_TYPES, PlaceResult, get_places_client
 
@@ -134,10 +135,7 @@ async def search_fitness_studios(
 
     client = await get_places_client()
     if not client:
-        return (
-            "I'm sorry, but fitness studio search is not currently available. "
-            "Please try again later or search manually on Google Maps."
-        )
+        return get_fallback(FallbackType.FEATURE_DISABLED, context={"feature": "fitness"})
 
     # Build search query
     search_query = query
@@ -157,10 +155,7 @@ async def search_fitness_studios(
 
     except Exception as e:
         logger.error("search_fitness_studios_error", error=str(e))
-        return (
-            "I encountered an error while searching for studios. "
-            "Please try again or be more specific about what you're looking for."
-        )
+        return places_fallback(query=search_query, error=e)
 
 
 async def get_studio_details(place_id: str) -> str:
@@ -180,7 +175,7 @@ async def get_studio_details(place_id: str) -> str:
 
     client = await get_places_client()
     if not client:
-        return "Studio details are not currently available. Please try again later."
+        return get_fallback(FallbackType.FEATURE_DISABLED, context={"feature": "fitness"})
 
     try:
         result = await client.get_place_details(place_id)
@@ -188,7 +183,7 @@ async def get_studio_details(place_id: str) -> str:
 
     except Exception as e:
         logger.error("get_studio_details_error", place_id=place_id, error=str(e))
-        return "I couldn't retrieve the studio details. Please try again."
+        return places_fallback(error=e)
 
 
 def register_places_tools() -> None:

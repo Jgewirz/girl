@@ -4,6 +4,7 @@ from langchain_core.messages import HumanMessage
 from telegram import Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -11,9 +12,17 @@ from telegram.ext import (
 )
 
 from src.agent import AgentState, create_agent
+from src.agent.fallbacks import (
+    FallbackType,
+    get_fallback,
+    unknown_fallback,
+)
 from src.agent.state import UserContext
 from src.cache.session import get_session_manager
 from src.config.logging import get_logger
+
+# Import the robust photo handler
+from .photo_handler import handle_photo, handle_photo_intent_callback
 
 logger = get_logger(__name__)
 
@@ -277,127 +286,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     except Exception as e:
         logger.error("message_handler_error", user_id=user.id, error=str(e))
-        await update.message.reply_text(
-            "Oops! Something went wrong on my end. Please try again in a moment."
-        )
-
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle incoming photo messages for style analysis."""
-    user = update.effective_user
-
-    logger.info(
-        "incoming_photo",
-        user_id=user.id,
-        username=user.username,
-    )
-
-    # Check rate limit
-    try:
-        session_mgr = await get_session_manager()
-        is_allowed, count = await session_mgr.check_rate_limit(
-            telegram_id=user.id,
-            max_requests=RATE_LIMIT_MAX_REQUESTS,
-            window_seconds=RATE_LIMIT_WINDOW,
-        )
-        if not is_allowed:
-            await update.message.reply_text(
-                "You're sending messages too quickly! Please wait a moment."
-            )
-            return
-    except Exception as e:
-        logger.warning("rate_limit_check_failed", user_id=user.id, error=str(e))
-
-    # Show typing indicator
-    await update.message.chat.send_action("typing")
-
-    try:
-        # Get the largest photo (best quality)
-        photo = update.message.photo[-1]
-        photo_file = await photo.get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
-
-        # Get caption as context
-        caption = update.message.caption or ""
-        caption_lower = caption.lower()
-
-        # Get session
-        session_mgr = await get_session_manager()
-        session = await session_mgr.get_session(user.id)
-
-        # Determine intent from caption
-        if any(kw in caption_lower for kw in ["color", "season", "coloring", "undertone", "analyze my"]):
-            # Color analysis
-            from src.agent.tools.stylist import analyze_my_colors
-
-            result = await analyze_my_colors(
-                image_data=bytes(photo_bytes),
-                user_context={"style_profile": session.style_profile},
-            )
-
-            if "error" in result:
-                await update.message.reply_text(result["error"])
-            else:
-                # Save profile update
-                if result.get("profile_update"):
-                    session.style_profile.update(result["profile_update"])
-                    await session_mgr.save_session(session)
-
-                await update.message.reply_text(result["response"], parse_mode="Markdown")
-
-        elif any(kw in caption_lower for kw in ["add", "wardrobe", "catalog", "save this"]):
-            # Wardrobe item
-            from src.agent.tools.stylist import add_wardrobe_item
-
-            result = await add_wardrobe_item(
-                image_data=bytes(photo_bytes),
-                notes=caption if caption and "add" not in caption_lower else None,
-                user_context={"wardrobe": session.wardrobe},
-            )
-
-            if "error" in result:
-                await update.message.reply_text(result["error"])
-            else:
-                # Save item to wardrobe
-                if result.get("item"):
-                    session.wardrobe.append(result["item"])
-                    await session_mgr.save_session(session)
-
-                await update.message.reply_text(result["response"], parse_mode="Markdown")
-
-        else:
-            # Default: outfit analysis
-            from src.agent.tools.stylist import analyze_outfit_photo
-
-            # Extract occasion from caption
-            occasion = None
-            occasion_keywords = ["work", "interview", "date", "casual", "formal", "wedding", "party", "office"]
-            for kw in occasion_keywords:
-                if kw in caption_lower:
-                    occasion = kw
-                    break
-
-            response = await analyze_outfit_photo(
-                image_data=bytes(photo_bytes),
-                occasion=occasion,
-                question=caption if caption else None,
-                user_context={
-                    "style_profile": session.style_profile,
-                    "wardrobe": session.wardrobe,
-                },
-            )
-
-            await update.message.reply_text(response, parse_mode="Markdown")
-
-        # Update session message history
-        session.add_message("human", f"[Sent photo] {caption}")
-        await session_mgr.save_session(session)
-
-    except Exception as e:
-        logger.error("photo_handler_error", user_id=user.id, error=str(e))
-        await update.message.reply_text(
-            "I had trouble with that photo. Try sending it again with good lighting!"
-        )
+        # Use the fallback system for user-friendly error messages
+        fallback_msg = unknown_fallback(error=e)
+        await update.message.reply_text(fallback_msg)
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -416,6 +307,12 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("clear", clear_command))
+
+    # Callback handler for photo intent selection
+    app.add_handler(CallbackQueryHandler(
+        handle_photo_intent_callback,
+        pattern=r"^photo_intent:"
+    ))
 
     # Photo handler (before text handler)
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

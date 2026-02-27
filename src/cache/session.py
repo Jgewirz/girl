@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from src.config.logging import get_logger
 
-from .redis import RedisClient
+from .redis import CacheClient, get_cache
 
 logger = get_logger(__name__)
 
@@ -90,15 +90,18 @@ class ConversationSession:
 
 
 class SessionManager:
-    """Manages user sessions in Redis with rate limiting."""
+    """Manages user sessions with rate limiting.
 
-    def __init__(self, redis_client: RedisClient):
-        self._redis = redis_client
+    Works with Redis or in-memory cache transparently.
+    """
+
+    def __init__(self, cache_client: CacheClient):
+        self._cache = cache_client
 
     @classmethod
     async def create(cls) -> "SessionManager":
-        """Create a SessionManager with a new Redis client."""
-        client = await RedisClient.create()
+        """Create a SessionManager with appropriate cache backend."""
+        client = await get_cache()
         return cls(client)
 
     def _session_key(self, telegram_id: int) -> str:
@@ -112,7 +115,7 @@ class SessionManager:
     async def get_session(self, telegram_id: int) -> ConversationSession:
         """Get or create a session for a user."""
         key = self._session_key(telegram_id)
-        data = await self._redis.get(key)
+        data = await self._cache.get(key)
 
         if data:
             try:
@@ -136,7 +139,7 @@ class SessionManager:
         key = self._session_key(session.telegram_id)
         session.updated_at = datetime.now(UTC).isoformat()
 
-        success = await self._redis.set(
+        success = await self._cache.set(
             key,
             session.to_json(),
             ttl_seconds=SESSION_TTL,
@@ -156,7 +159,7 @@ class SessionManager:
     async def delete_session(self, telegram_id: int) -> bool:
         """Delete a user's session."""
         key = self._session_key(telegram_id)
-        success = await self._redis.delete(key)
+        success = await self._cache.delete(key)
         if success:
             logger.info("session_deleted", telegram_id=telegram_id)
         return success
@@ -196,7 +199,7 @@ class SessionManager:
         key = self._rate_key(telegram_id)
 
         # Increment counter
-        count = await self._redis.incr(key)
+        count = await self._cache.incr(key)
 
         if count is None:
             # Redis error - allow request but log warning
@@ -205,7 +208,7 @@ class SessionManager:
 
         # Set expiry on first request in window
         if count == 1:
-            await self._redis.expire(key, window_seconds)
+            await self._cache.expire(key, window_seconds)
 
         is_allowed = count <= max_requests
 
@@ -221,7 +224,7 @@ class SessionManager:
 
     async def close(self) -> None:
         """Close the Redis client."""
-        await self._redis.close()
+        await self._cache.close()
 
 
 # Convenience function for getting a session manager

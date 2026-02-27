@@ -10,8 +10,16 @@ from openai import AsyncOpenAI
 
 from src.config import settings
 from src.config.logging import get_logger
+from src.services.resilience import (
+    ResilienceResult,
+    create_service_config,
+    resilient_call,
+)
 
 logger = get_logger(__name__)
+
+# Resilience configuration for OpenAI
+_openai_config = create_service_config("openai")
 
 
 @dataclass
@@ -78,7 +86,7 @@ class VisionService:
 
         base64_image = base64.b64encode(image_data).decode("utf-8")
 
-        try:
+        async def _call_api():
             response = await self._client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -100,26 +108,32 @@ class VisionService:
                 response_format={"type": "json_object"},
                 max_tokens=1500,
             )
+            return json.loads(response.choices[0].message.content)
 
-            data = json.loads(response.choices[0].message.content)
-            logger.info("outfit_analysis_complete")
+        result = await resilient_call(
+            func=_call_api,
+            config=_openai_config,
+        )
 
-            return OutfitAnalysis(
-                items_detected=data.get("items_detected", []),
-                overall_style=data.get("overall_style", "casual"),
-                color_harmony=data.get("color_harmony", 0.5),
-                occasion_scores=data.get("occasion_scores", {}),
-                whats_working=data.get("whats_working", []),
-                suggestions=data.get("suggestions", []),
-                color_notes=data.get("color_notes", []),
-                elevate_with=data.get("elevate_with", []),
-                rating=data.get("rating", 7),
-                confidence=data.get("confidence", 0.8),
-            )
+        if not result.success:
+            logger.error("outfit_analysis_failed", error=result.error)
+            raise RuntimeError(result.error or "Failed to analyze outfit")
 
-        except Exception as e:
-            logger.error("outfit_analysis_failed", error=str(e))
-            raise
+        data = result.value
+        logger.info("outfit_analysis_complete", attempts=result.attempts)
+
+        return OutfitAnalysis(
+            items_detected=data.get("items_detected", []),
+            overall_style=data.get("overall_style", "casual"),
+            color_harmony=data.get("color_harmony", 0.5),
+            occasion_scores=data.get("occasion_scores", {}),
+            whats_working=data.get("whats_working", []),
+            suggestions=data.get("suggestions", []),
+            color_notes=data.get("color_notes", []),
+            elevate_with=data.get("elevate_with", []),
+            rating=data.get("rating", 7),
+            confidence=data.get("confidence", 0.8),
+        )
 
     async def analyze_colors(
         self,
@@ -165,7 +179,7 @@ class VisionService:
 
         base64_image = base64.b64encode(image_data).decode("utf-8")
 
-        try:
+        async def _call_api():
             response = await self._client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -187,25 +201,31 @@ class VisionService:
                 response_format={"type": "json_object"},
                 max_tokens=1200,
             )
+            return json.loads(response.choices[0].message.content)
 
-            data = json.loads(response.choices[0].message.content)
-            logger.info("color_analysis_complete", season=data.get("color_season"))
+        result = await resilient_call(
+            func=_call_api,
+            config=_openai_config,
+        )
 
-            return ColorAnalysis(
-                undertone=data.get("undertone", "neutral"),
-                undertone_confidence=data.get("undertone_confidence", 0.7),
-                color_season=data.get("color_season", "true_autumn"),
-                season_confidence=data.get("season_confidence", 0.7),
-                season_reasoning=data.get("season_reasoning", ""),
-                features=data.get("features", {}),
-                best_colors=data.get("best_colors", []),
-                avoid_colors=data.get("avoid_colors", []),
-                makeup_recommendations=data.get("makeup_recommendations", {}),
-            )
+        if not result.success:
+            logger.error("color_analysis_failed", error=result.error)
+            raise RuntimeError(result.error or "Failed to analyze colors")
 
-        except Exception as e:
-            logger.error("color_analysis_failed", error=str(e))
-            raise
+        data = result.value
+        logger.info("color_analysis_complete", season=data.get("color_season"), attempts=result.attempts)
+
+        return ColorAnalysis(
+            undertone=data.get("undertone", "neutral"),
+            undertone_confidence=data.get("undertone_confidence", 0.7),
+            color_season=data.get("color_season", "true_autumn"),
+            season_confidence=data.get("season_confidence", 0.7),
+            season_reasoning=data.get("season_reasoning", ""),
+            features=data.get("features", {}),
+            best_colors=data.get("best_colors", []),
+            avoid_colors=data.get("avoid_colors", []),
+            makeup_recommendations=data.get("makeup_recommendations", {}),
+        )
 
     async def catalog_item(self, image_data: bytes) -> WardrobeItemAnalysis:
         """Analyze a clothing item for wardrobe cataloging."""
@@ -226,7 +246,7 @@ class VisionService:
 
         base64_image = base64.b64encode(image_data).decode("utf-8")
 
-        try:
+        async def _call_api():
             response = await self._client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -248,23 +268,29 @@ class VisionService:
                 response_format={"type": "json_object"},
                 max_tokens=800,
             )
+            return json.loads(response.choices[0].message.content)
 
-            data = json.loads(response.choices[0].message.content)
-            logger.info("item_catalog_complete", category=data.get("category"))
+        result = await resilient_call(
+            func=_call_api,
+            config=_openai_config,
+        )
 
-            return WardrobeItemAnalysis(
-                category=data.get("category", "tops"),
-                subcategory=data.get("subcategory", "top"),
-                colors=data.get("colors", []),
-                patterns=data.get("patterns", ["solid"]),
-                occasions=data.get("occasions", ["casual"]),
-                seasons=data.get("seasons", ["spring", "summer", "fall", "winter"]),
-                style_descriptors=data.get("style_descriptors", []),
-            )
+        if not result.success:
+            logger.error("item_catalog_failed", error=result.error)
+            raise RuntimeError(result.error or "Failed to catalog item")
 
-        except Exception as e:
-            logger.error("item_catalog_failed", error=str(e))
-            raise
+        data = result.value
+        logger.info("item_catalog_complete", category=data.get("category"), attempts=result.attempts)
+
+        return WardrobeItemAnalysis(
+            category=data.get("category", "tops"),
+            subcategory=data.get("subcategory", "top"),
+            colors=data.get("colors", []),
+            patterns=data.get("patterns", ["solid"]),
+            occasions=data.get("occasions", ["casual"]),
+            seasons=data.get("seasons", ["spring", "summer", "fall", "winter"]),
+            style_descriptors=data.get("style_descriptors", []),
+        )
 
     def _build_outfit_prompt(self, profile: dict | None) -> str:
         """Build personalized system prompt."""

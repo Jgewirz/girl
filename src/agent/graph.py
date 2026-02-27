@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -11,6 +11,7 @@ from langgraph.prebuilt import ToolNode
 from src.config import settings
 from src.config.logging import get_logger
 
+from .fallbacks import categorize_exception, get_fallback, unknown_fallback
 from .state import AgentState, UserContext
 from .tools import tool_registry
 
@@ -136,20 +137,41 @@ async def process_message(state: AgentState) -> dict[str, Any]:
         return {"messages": [response], "next_action": "respond"}
 
     except Exception as e:
-        logger.error("llm_error", error=str(e))
-        error_response = AIMessage(
-            content="I'm having trouble processing that right now. Could you try again?"
-        )
+        logger.error("llm_error", error=str(e), exc_info=True)
+        # Use the fallback system for user-friendly error messages
+        fallback_type = categorize_exception(e)
+        fallback_msg = get_fallback(fallback_type, error=e)
+        error_response = AIMessage(content=fallback_msg)
         return {"messages": [error_response], "error": str(e), "next_action": "respond"}
 
 
 async def handle_tool_response(state: AgentState) -> dict[str, Any]:
     """Handle tool execution results and generate final response."""
-    # This node handles post-tool-execution response generation
-    llm = _get_llm(complex_task=False)
-    messages = _build_messages(state)
-    response = await llm.ainvoke(messages)
-    return {"messages": [response], "next_action": "respond"}
+    try:
+        # Check for tool errors in recent messages
+        tool_errors = []
+        for msg in state.messages[-5:]:  # Check last 5 messages
+            if isinstance(msg, ToolMessage) and msg.content:
+                content = str(msg.content).lower()
+                if "error" in content or "failed" in content or "unavailable" in content:
+                    tool_errors.append(msg.content)
+
+        # If there were tool errors, include context for the LLM
+        llm = _get_llm(complex_task=False)
+        messages = _build_messages(state)
+
+        if tool_errors:
+            logger.warning("tool_errors_detected", error_count=len(tool_errors))
+
+        response = await llm.ainvoke(messages)
+        return {"messages": [response], "next_action": "respond"}
+
+    except Exception as e:
+        logger.error("handle_tool_response_error", error=str(e))
+        # Return a graceful error message
+        fallback_msg = unknown_fallback(error=e)
+        error_response = AIMessage(content=fallback_msg)
+        return {"messages": [error_response], "error": str(e), "next_action": "respond"}
 
 
 def should_use_tools(state: AgentState) -> str:
@@ -161,6 +183,51 @@ def should_use_tools(state: AgentState) -> str:
             return "tools"
 
     return "respond"
+
+
+class SafeToolNode:
+    """Wrapper around ToolNode that catches exceptions and returns fallback messages."""
+
+    def __init__(self, tools: list):
+        self._tool_node = ToolNode(tools)
+        self._tool_names = {t.name for t in tools}
+
+    async def __call__(self, state: AgentState) -> dict[str, Any]:
+        """Execute tools with error handling."""
+        try:
+            result = await self._tool_node.ainvoke(state)
+            return result
+        except Exception as e:
+            logger.error("tool_execution_error", error=str(e), exc_info=True)
+
+            # Find which tool was being called
+            tool_name = "unknown"
+            last_msg = state.messages[-1] if state.messages else None
+            if last_msg and isinstance(last_msg, AIMessage) and last_msg.tool_calls:
+                tool_name = last_msg.tool_calls[0].get("name", "unknown")
+
+            # Generate fallback response
+            fallback_msg = unknown_fallback(error=e)
+
+            # Create tool response messages for each failed tool call
+            tool_messages = []
+            if last_msg and isinstance(last_msg, AIMessage) and last_msg.tool_calls:
+                for tool_call in last_msg.tool_calls:
+                    tool_messages.append(
+                        ToolMessage(
+                            content=f"Tool error: {fallback_msg}",
+                            tool_call_id=tool_call.get("id", ""),
+                        )
+                    )
+            else:
+                tool_messages.append(
+                    ToolMessage(
+                        content=f"Tool error: {fallback_msg}",
+                        tool_call_id="error",
+                    )
+                )
+
+            return {"messages": tool_messages}
 
 
 def create_agent() -> CompiledStateGraph:
@@ -176,7 +243,8 @@ def create_agent() -> CompiledStateGraph:
     # Add tool node if we have tools registered
     tools = tool_registry.to_langchain_tools()
     if tools:
-        graph.add_node("tools", ToolNode(tools))
+        # Use SafeToolNode for error handling
+        graph.add_node("tools", SafeToolNode(tools))
         graph.add_node("post_tools", handle_tool_response)
 
     # Define edges

@@ -1,6 +1,7 @@
 """Google Places API client for fitness studio discovery."""
 
 import hashlib
+import json as json_module
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -10,8 +11,16 @@ import httpx
 from src.cache.redis import RedisClient
 from src.config import settings
 from src.config.logging import get_logger
+from src.services.resilience import (
+    ResilienceResult,
+    create_service_config,
+    resilient_call,
+)
 
 logger = get_logger(__name__)
+
+# Resilience configuration for Google Places
+_places_config = create_service_config("google_places")
 
 # Google Places API endpoints
 PLACES_BASE_URL = "https://places.googleapis.com/v1"
@@ -180,16 +189,10 @@ class PlacesClient:
         else:
             included_types = ["gym", "fitness_center", "yoga_studio"]
 
-        # Check cache
+        # Build cache key
         cache_key = self._cache_key(
             "nearby", str(latitude), str(longitude), activity_type or "all", str(radius_meters)
         )
-        cached = await self._get_cached(cache_key)
-        if cached:
-            import json
-            logger.debug("places_cache_hit", cache_key=cache_key)
-            data = json.loads(cached)
-            return [PlaceResult(**p) for p in data]
 
         # Build request
         request_body = {
@@ -218,7 +221,7 @@ class PlacesClient:
             "places.googleMapsUri",
         ])
 
-        try:
+        async def _call_api() -> list[PlaceResult]:
             client = await self._get_client()
             response = await client.post(
                 NEARBY_SEARCH_URL,
@@ -228,29 +231,47 @@ class PlacesClient:
 
             if response.status_code == 200:
                 data = response.json()
-                results = self._parse_places_response(data)
+                return self._parse_places_response(data)
+            else:
+                raise httpx.HTTPStatusError(
+                    f"Places API error: {response.status_code}",
+                    request=response.request,
+                    response=response,
+                )
 
-                # Cache results
-                import json
-                cache_data = json.dumps([r.to_dict() for r in results])
-                await self._set_cached(cache_key, cache_data, CACHE_TTL_SEARCH)
+        async def _cache_get(key: str) -> list[PlaceResult] | None:
+            cached = await self._get_cached(key)
+            if cached:
+                data = json_module.loads(cached)
+                return [PlaceResult(**p) for p in data]
+            return None
 
+        async def _cache_set(key: str, value: list[PlaceResult]) -> None:
+            cache_data = json_module.dumps([r.to_dict() for r in value])
+            await self._set_cached(key, cache_data, CACHE_TTL_SEARCH)
+
+        result = await resilient_call(
+            func=_call_api,
+            config=_places_config,
+            cache_get=_cache_get,
+            cache_set=_cache_set,
+            cache_key=cache_key,
+            fallback=[],  # Return empty list on total failure
+        )
+
+        if result.success:
+            if result.from_cache:
+                logger.debug("places_cache_hit", cache_key=cache_key)
+            else:
                 logger.info(
                     "places_search_success",
                     activity=activity_type,
-                    result_count=len(results),
+                    result_count=len(result.value),
+                    attempts=result.attempts,
                 )
-                return results
-            else:
-                logger.error(
-                    "places_search_error",
-                    status_code=response.status_code,
-                    response=response.text[:500],
-                )
-                return []
-
-        except httpx.RequestError as e:
-            logger.error("places_request_error", error=str(e))
+            return result.value
+        else:
+            logger.error("places_search_failed", error=result.error)
             return []
 
     async def search_text(
@@ -272,15 +293,9 @@ class PlacesClient:
         Returns:
             List of PlaceResult objects
         """
-        # Check cache
+        # Build cache key
         loc_str = f"{location[0]},{location[1]}" if location else "none"
         cache_key = self._cache_key("text", query, loc_str)
-        cached = await self._get_cached(cache_key)
-        if cached:
-            import json
-            logger.debug("places_cache_hit", cache_key=cache_key)
-            data = json.loads(cached)
-            return [PlaceResult(**p) for p in data]
 
         # Build request
         request_body: dict[str, Any] = {
@@ -311,7 +326,7 @@ class PlacesClient:
             "places.googleMapsUri",
         ])
 
-        try:
+        async def _call_api() -> list[PlaceResult]:
             client = await self._get_client()
             response = await client.post(
                 TEXT_SEARCH_URL,
@@ -321,29 +336,47 @@ class PlacesClient:
 
             if response.status_code == 200:
                 data = response.json()
-                results = self._parse_places_response(data)
+                return self._parse_places_response(data)
+            else:
+                raise httpx.HTTPStatusError(
+                    f"Places API error: {response.status_code}",
+                    request=response.request,
+                    response=response,
+                )
 
-                # Cache results
-                import json
-                cache_data = json.dumps([r.to_dict() for r in results])
-                await self._set_cached(cache_key, cache_data, CACHE_TTL_SEARCH)
+        async def _cache_get(key: str) -> list[PlaceResult] | None:
+            cached = await self._get_cached(key)
+            if cached:
+                data = json_module.loads(cached)
+                return [PlaceResult(**p) for p in data]
+            return None
 
+        async def _cache_set(key: str, value: list[PlaceResult]) -> None:
+            cache_data = json_module.dumps([r.to_dict() for r in value])
+            await self._set_cached(key, cache_data, CACHE_TTL_SEARCH)
+
+        result = await resilient_call(
+            func=_call_api,
+            config=_places_config,
+            cache_get=_cache_get,
+            cache_set=_cache_set,
+            cache_key=cache_key,
+            fallback=[],
+        )
+
+        if result.success:
+            if result.from_cache:
+                logger.debug("places_cache_hit", cache_key=cache_key)
+            else:
                 logger.info(
                     "places_text_search_success",
                     query=query,
-                    result_count=len(results),
+                    result_count=len(result.value),
+                    attempts=result.attempts,
                 )
-                return results
-            else:
-                logger.error(
-                    "places_text_search_error",
-                    status_code=response.status_code,
-                    response=response.text[:500],
-                )
-                return []
-
-        except httpx.RequestError as e:
-            logger.error("places_text_request_error", error=str(e))
+            return result.value
+        else:
+            logger.error("places_text_search_failed", error=result.error)
             return []
 
     async def get_place_details(self, place_id: str) -> PlaceResult | None:
@@ -356,13 +389,8 @@ class PlacesClient:
         Returns:
             PlaceResult with full details, or None if not found
         """
-        # Check cache
+        # Build cache key
         cache_key = self._cache_key("details", place_id)
-        cached = await self._get_cached(cache_key)
-        if cached:
-            import json
-            logger.debug("places_details_cache_hit", place_id=place_id)
-            return PlaceResult(**json.loads(cached))
 
         # Field mask for details
         field_mask = ",".join([
@@ -380,7 +408,7 @@ class PlacesClient:
             "googleMapsUri",
         ])
 
-        try:
+        async def _call_api() -> PlaceResult | None:
             client = await self._get_client()
             url = f"{PLACE_DETAILS_URL}/{place_id}"
             response = await client.get(
@@ -390,27 +418,44 @@ class PlacesClient:
 
             if response.status_code == 200:
                 data = response.json()
-                result = self._parse_single_place(data)
-
-                if result:
-                    # Cache result
-                    import json
-                    await self._set_cached(
-                        cache_key, json.dumps(result.to_dict()), CACHE_TTL_DETAILS
-                    )
-
-                logger.info("places_details_success", place_id=place_id)
-                return result
+                return self._parse_single_place(data)
             else:
-                logger.error(
-                    "places_details_error",
-                    place_id=place_id,
-                    status_code=response.status_code,
+                raise httpx.HTTPStatusError(
+                    f"Places API error: {response.status_code}",
+                    request=response.request,
+                    response=response,
                 )
-                return None
 
-        except httpx.RequestError as e:
-            logger.error("places_details_request_error", place_id=place_id, error=str(e))
+        async def _cache_get(key: str) -> PlaceResult | None:
+            cached = await self._get_cached(key)
+            if cached:
+                return PlaceResult(**json_module.loads(cached))
+            return None
+
+        async def _cache_set(key: str, value: PlaceResult | None) -> None:
+            if value:
+                await self._set_cached(
+                    key, json_module.dumps(value.to_dict()), CACHE_TTL_DETAILS
+                )
+
+        result = await resilient_call(
+            func=_call_api,
+            config=_places_config,
+            cache_get=_cache_get,
+            cache_set=_cache_set,
+            cache_key=cache_key,
+            fallback=None,
+        )
+
+        if result.success and result.value:
+            if result.from_cache:
+                logger.debug("places_details_cache_hit", place_id=place_id)
+            else:
+                logger.info("places_details_success", place_id=place_id, attempts=result.attempts)
+            return result.value
+        else:
+            if result.error:
+                logger.error("places_details_failed", place_id=place_id, error=result.error)
             return None
 
     def _parse_places_response(self, data: dict[str, Any]) -> list[PlaceResult]:
